@@ -94,6 +94,54 @@
 
         .scene-btn:hover  { color: rgba(255,255,255,0.7); border-color: rgba(255,255,255,0.25); }
         .scene-btn.active { color: #fff; border-color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.08); }
+        .scene-btn.on     { color: #00ffaa; border-color: rgba(0,255,170,0.5); background: rgba(0,255,170,0.08); }
+
+        /* ── EXTRA CONTROLS ────────────────────────────────── */
+        #extra-ui {
+            position: fixed;
+            bottom: 68px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        .cam-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 18px;
+            background: rgba(0,0,0,0.55);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            color: rgba(255,255,255,0.4);
+            font-family: Georgia, serif;
+            font-size: 0.82rem;
+            letter-spacing: 1px;
+            backdrop-filter: blur(6px);
+            user-select: none;
+        }
+
+        #cam-slider {
+            -webkit-appearance: none;
+            width: 90px;
+            height: 2px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        #cam-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.6);
+            cursor: pointer;
+        }
 
         /* ── NO BODY MESSAGE ───────────────────────────────── */
         #no-body {
@@ -125,6 +173,15 @@
     <h1>Shadow Puppet Show</h1>
     <p>Step back from your camera so your full body is visible. Your silhouette will be cast onto the stage.</p>
     <button id="start-btn" onclick="init()">RAISE THE CURTAIN</button>
+</div>
+
+<div id="extra-ui">
+    <button class="scene-btn" id="tracking-btn" onclick="toggleTracking()">Show Tracking</button>
+    <label class="cam-label">
+        Camera
+        <input type="range" id="cam-slider" min="0" max="100" value="0"
+               oninput="camOpacity = this.value / 100">
+    </label>
 </div>
 
 <div id="scene-ui">
@@ -624,6 +681,107 @@ function drawSilhouette(lm, lHand, rHand) {
 }
 
 // ================================================================
+// CAMERA OVERLAY + TRACKING VISUALIZER
+// ================================================================
+let showTracking = false;
+let camOpacity   = 0;
+
+function toggleTracking() {
+    showTracking = !showTracking;
+    const btn = document.getElementById('tracking-btn');
+    btn.textContent = showTracking ? 'Hide Tracking' : 'Show Tracking';
+    btn.classList.toggle('on', showTracking);
+}
+
+function drawCameraOverlay() {
+    if (camOpacity <= 0) return;
+    C.save();
+    C.globalAlpha = camOpacity;
+    C.translate(canvas.width, 0);
+    C.scale(-1, 1);
+    C.drawImage(video, 0, 0, canvas.width, canvas.height);
+    C.restore();
+}
+
+// Standard MediaPipe pose skeleton connections
+const POSE_CONNECTIONS = [
+    [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8], // face
+    [9,10],                                            // mouth
+    [11,12],                                           // shoulders
+    [11,13],[13,15],[12,14],[14,16],                   // arms
+    [15,17],[17,19],[15,19],[16,18],[18,20],[16,20],   // wrist/hand
+    [11,23],[12,24],[23,24],                           // torso
+    [23,25],[25,27],[27,29],[29,31],[27,31],           // left leg
+    [24,26],[26,28],[28,30],[30,32],[28,32],           // right leg
+];
+
+const HAND_CONNECTIONS = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],
+    [13,17],[17,18],[18,19],[19,20],[0,17],
+];
+
+// Body region color by landmark index
+function landmarkColor(i) {
+    if (i <= 10)  return '#00eeff'; // face
+    if (i <= 16)  return '#00ff88'; // arms
+    if (i <= 22)  return '#00ff88'; // hands
+    if (i <= 24)  return '#ffee00'; // hips
+    return '#ff8844';               // legs
+}
+
+function drawTracking(lm, lHand, rHand) {
+    const W = canvas.width, H = canvas.height;
+    const pt = i => ({ x: (1 - lm[i].x) * W, y: lm[i].y * H, v: lm[i].visibility });
+
+    C.save();
+    C.lineWidth = 1.5;
+
+    // Skeleton lines
+    for (const [a, b] of POSE_CONNECTIONS) {
+        const p1 = pt(a), p2 = pt(b);
+        if (p1.v < 0.3 || p2.v < 0.3) continue;
+        C.globalAlpha = Math.min(p1.v, p2.v) * 0.7;
+        C.strokeStyle = '#ffffff';
+        C.beginPath(); C.moveTo(p1.x, p1.y); C.lineTo(p2.x, p2.y); C.stroke();
+    }
+
+    // Landmark dots
+    for (let i = 0; i < lm.length; i++) {
+        const p = pt(i);
+        if (p.v < 0.3) continue;
+        C.globalAlpha = p.v;
+        C.fillStyle = landmarkColor(i);
+        C.beginPath(); C.arc(p.x, p.y, 4, 0, Math.PI * 2); C.fill();
+    }
+
+    // Hand landmarks
+    [lHand, rHand].forEach(hand => {
+        if (!hand) return;
+        const hpt = i => ({ x: (1 - hand[i].x) * W, y: hand[i].y * H });
+
+        C.globalAlpha = 0.75;
+        C.strokeStyle = '#ffaa00';
+        C.lineWidth = 1.2;
+        for (const [a, b] of HAND_CONNECTIONS) {
+            const p1 = hpt(a), p2 = hpt(b);
+            C.beginPath(); C.moveTo(p1.x, p1.y); C.lineTo(p2.x, p2.y); C.stroke();
+        }
+
+        C.fillStyle = '#ffdd00';
+        for (let i = 0; i < hand.length; i++) {
+            const p = hpt(i);
+            C.beginPath(); C.arc(p.x, p.y, i === 0 ? 5 : 3, 0, Math.PI * 2); C.fill();
+        }
+    });
+
+    C.globalAlpha = 1;
+    C.restore();
+}
+
+// ================================================================
 // THEATER FRAME
 // ================================================================
 function drawFrame() {
@@ -666,8 +824,11 @@ function render() {
 
     if (lm) {
         drawSilhouette(lm, smoothedLH, smoothedRH);
+        drawCameraOverlay();
+        if (showTracking) drawTracking(lm, smoothedLH, smoothedRH);
         noBody.style.display = 'none';
     } else {
+        drawCameraOverlay();
         noBody.style.display = 'block';
     }
 
