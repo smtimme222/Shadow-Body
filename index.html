@@ -177,6 +177,7 @@
 
 <div id="extra-ui">
     <button class="scene-btn" id="tracking-btn" onclick="toggleTracking()">Show Tracking</button>
+    <button class="scene-btn on" id="lines-btn" onclick="toggleLines()">Hide Lines</button>
     <label class="cam-label">
         Camera
         <input type="range" id="cam-slider" min="0" max="100" value="0"
@@ -684,6 +685,7 @@ function drawSilhouette(lm, lHand, rHand) {
 // CAMERA OVERLAY + TRACKING VISUALIZER
 // ================================================================
 let showTracking = false;
+let showLines    = true;
 let camOpacity   = 0;
 
 function toggleTracking() {
@@ -691,6 +693,13 @@ function toggleTracking() {
     const btn = document.getElementById('tracking-btn');
     btn.textContent = showTracking ? 'Hide Tracking' : 'Show Tracking';
     btn.classList.toggle('on', showTracking);
+}
+
+function toggleLines() {
+    showLines = !showLines;
+    const btn = document.getElementById('lines-btn');
+    btn.textContent = showLines ? 'Hide Lines' : 'Show Lines';
+    btn.classList.toggle('on', showLines);
 }
 
 function drawCameraOverlay() {
@@ -908,7 +917,7 @@ function render() {
         drawSilhouette(lm, smoothedLH, smoothedRH);
         drawCameraOverlay();
         if (showTracking) drawTracking(lm, smoothedLH, smoothedRH);
-        drawFingerConnections(smoothedLH, smoothedRH);
+        if (showLines) drawFingerConnections(smoothedLH, smoothedRH);
         noBody.style.display = 'none';
     } else {
         drawCameraOverlay();
