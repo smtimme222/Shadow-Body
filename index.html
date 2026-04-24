@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Shadow Puppet Show</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body { background: #000; overflow: hidden; }
+
+        #stage {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* ── START OVERLAY ─────────────────────────────────── */
+        #start-overlay {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 20;
+            font-family: Georgia, 'Times New Roman', serif;
+            color: #fff;
+            text-align: center;
+            gap: 16px;
+        }
+
+        #start-overlay h1 {
+            font-size: 3.2rem;
+            font-weight: normal;
+            letter-spacing: 6px;
+            color: rgba(255, 175, 60, 0.9);
+        }
+
+        #start-overlay p {
+            color: #444;
+            font-size: 0.95rem;
+            letter-spacing: 1px;
+            max-width: 420px;
+            line-height: 1.7;
+        }
+
+        #start-btn {
+            margin-top: 8px;
+            padding: 13px 52px;
+            background: transparent;
+            color: rgba(255, 175, 60, 0.8);
+            border: 1px solid rgba(255, 175, 60, 0.35);
+            border-radius: 2px;
+            cursor: pointer;
+            font-family: Georgia, serif;
+            font-size: 0.9rem;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            transition: all 0.25s;
+        }
+
+        #start-btn:hover {
+            background: rgba(255, 175, 60, 0.1);
+            border-color: rgba(255, 175, 60, 0.6);
+            color: rgba(255, 175, 60, 1);
+        }
+
+        /* ── SCENE SELECTOR ────────────────────────────────── */
+        #scene-ui {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        .scene-btn {
+            padding: 7px 22px;
+            background: rgba(0, 0, 0, 0.55);
+            color: rgba(255, 255, 255, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            cursor: pointer;
+            font-family: Georgia, serif;
+            font-size: 0.82rem;
+            letter-spacing: 1px;
+            backdrop-filter: blur(6px);
+            transition: all 0.2s;
+            user-select: none;
+        }
+
+        .scene-btn:hover  { color: rgba(255,255,255,0.7); border-color: rgba(255,255,255,0.25); }
+        .scene-btn.active { color: #fff; border-color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.08); }
+
+        /* ── NO BODY MESSAGE ───────────────────────────────── */
+        #no-body {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.15);
+            font-family: Georgia, serif;
+            font-size: 1rem;
+            letter-spacing: 3px;
+            text-align: center;
+            pointer-events: none;
+            z-index: 5;
+            display: none;
+        }
+
+        #video { display: none; }
+    </style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+<video id="video" playsinline></video>
+
+<div id="no-body">step back so your<br>full body is visible</div>
+
+<div id="start-overlay">
+    <h1>Shadow Puppet Show</h1>
+    <p>Step back from your camera so your full body is visible. Your silhouette will be cast onto the stage.</p>
+    <button id="start-btn" onclick="init()">RAISE THE CURTAIN</button>
+</div>
+
+<div id="scene-ui">
+    <button class="scene-btn active" onclick="setScene(0)">🌅 Sunset Forest</button>
+    <button class="scene-btn"        onclick="setScene(1)">🌃 City Night</button>
+    <button class="scene-btn"        onclick="setScene(2)">🌊 Underwater</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const canvas = document.getElementById('stage');
+const C      = canvas.getContext('2d');
+const video  = document.getElementById('video');
+
+// ================================================================
+// CANVAS RESIZE
+// ================================================================
+function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ================================================================
+// POSE STATE
+// ================================================================
+let rawLandmarks = null;
+let rawLeftHand  = null;
+let rawRightHand = null;
+
+let smoothed    = null;
+let smoothedLH  = null;
+let smoothedRH  = null;
+const SMOOTH    = 0.55;
+
+function smoothArr(raw, prev) {
+    if (!raw) return null;
+    if (!prev || prev.length !== raw.length) return raw.map(l => ({ ...l }));
+    for (let i = 0; i < raw.length; i++) {
+        prev[i].x = prev[i].x * SMOOTH + raw[i].x * (1 - SMOOTH);
+        prev[i].y = prev[i].y * SMOOTH + raw[i].y * (1 - SMOOTH);
+        if (raw[i].visibility !== undefined) prev[i].visibility = raw[i].visibility;
+    }
+    return prev;
+}
+
+function smooth(raw) {
+    smoothed = smoothArr(raw, smoothed);
+    return smoothed;
+}
+
+// ================================================================
+// SCENE
+// ================================================================
+let scene = 0;
+let time  = 0;
+
+function setScene(i) {
+    scene = i;
+    document.querySelectorAll('.scene-btn').forEach((b, idx) =>
+        b.classList.toggle('active', idx === i));
+    spawnParticles();
+}
+
+// Parallax: driven by body center x offset from center
+function parallax(scale) {
+    if (!smoothed) return 0;
+    const lh = smoothed[23], rh = smoothed[24];
+    if (!lh || !rh) return 0;
+    const cx = 1 - ((lh.x + rh.x) / 2); // mirrored
+    return (cx - 0.5) * canvas.width * scale;
+}
+
+// ================================================================
+// PARTICLES
+// ================================================================
+const particles = [];
+
+function spawnParticles() {
+    particles.length = 0;
+    const count = scene === 1 ? 120 : 55;
+    for (let i = 0; i < count; i++) particles.push(makeParticle(true));
+}
+
+function makeParticle(randomY = false) {
+    const W = canvas.width, H = canvas.height;
+    if (scene === 0) { // floating dust / embers
+        return {
+            x:  Math.random() * W,
+            y:  randomY ? Math.random() * H : H + 5,
+            vx: (Math.random() - 0.5) * 0.6,
+            vy: -(Math.random() * 0.7 + 0.2),
+            r:  Math.random() * 3 + 1,
+            a:  Math.random() * 0.5 + 0.1,
+            da: (Math.random() - 0.5) * 0.003,
+        };
+    } else if (scene === 1) { // stars
+        return {
+            x:  Math.random() * W,
+            y:  Math.random() * H * 0.65,
+            vx: 0, vy: 0,
+            r:  Math.random() * 1.8 + 0.3,
+            a:  Math.random(),
+            phase: Math.random() * Math.PI * 2,
+            speed: Math.random() * 0.03 + 0.01,
+        };
+    } else { // bubbles
+        return {
+            x:  Math.random() * W,
+            y:  randomY ? Math.random() * H : H + 10,
+            vx: (Math.random() - 0.5) * 0.25,
+            vy: -(Math.random() * 0.6 + 0.25),
+            r:  Math.random() * 7 + 2,
+            a:  Math.random() * 0.25 + 0.05,
+        };
+    }
+}
+
+function tickParticles() {
+    const H = canvas.height;
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+
+        if (scene === 1) {
+            p.a = 0.25 + Math.sin(p.phase + time * p.speed) * 0.5;
+            continue;
+        }
+
+        if (p.da !== undefined) {
+            p.a += p.da;
+            if (p.a <= 0 || p.a >= 0.65) { p.da *= -1; }
+        }
+
+        const dead = scene === 0 ? p.y < -10 : p.y < -10;
+        if (dead) particles[i] = makeParticle(false);
+    }
+}
+
+function drawParticles() {
+    for (const p of particles) {
+        C.save();
+        C.globalAlpha = Math.max(0, p.a);
+        if (scene === 0) {
+            C.fillStyle = '#ffcc88';
+            C.beginPath(); C.arc(p.x, p.y, p.r, 0, Math.PI * 2); C.fill();
+        } else if (scene === 1) {
+            C.fillStyle = '#ffffff';
+            C.beginPath(); C.arc(p.x, p.y, p.r, 0, Math.PI * 2); C.fill();
+        } else {
+            C.strokeStyle = 'rgba(140, 210, 255, 0.8)';
+            C.lineWidth = 1;
+            C.beginPath(); C.arc(p.x, p.y, p.r, 0, Math.PI * 2); C.stroke();
+        }
+        C.restore();
+    }
+}
+
+// ================================================================
+// SCENES
+// ================================================================
+function drawBackground() {
+    const W = canvas.width, H = canvas.height;
+    const px = parallax(0.06);
+
+    if (scene === 0) drawForest(W, H, px);
+    else if (scene === 1) drawCity(W, H, px);
+    else drawUnderwater(W, H, px);
+}
+
+// ── FOREST ──────────────────────────────────────────────────────
+function drawForest(W, H, px) {
+    // Sky
+    const sky = C.createLinearGradient(0, 0, 0, H * 0.78);
+    sky.addColorStop(0,   '#0e0500');
+    sky.addColorStop(0.2, '#5c1c00');
+    sky.addColorStop(0.6, '#cc5010');
+    sky.addColorStop(1,   '#e88030');
+    C.fillStyle = sky; C.fillRect(0, 0, W, H);
+
+    // Sun glow
+    const sx = W * 0.5 + px * 0.05, sy = H * 0.42;
+    const sg = C.createRadialGradient(sx, sy, 0, sx, sy, H * 0.55);
+    sg.addColorStop(0,   'rgba(255,210,100,0.3)');
+    sg.addColorStop(0.35,'rgba(255,130,30,0.1)');
+    sg.addColorStop(1,   'rgba(0,0,0,0)');
+    C.fillStyle = sg; C.fillRect(0, 0, W, H);
+
+    // Far mountains
+    const mPts = [0,.60, .10,.38, .22,.52, .36,.30, .50,.46, .63,.28, .76,.44, .88,.34, 1,.52];
+    C.fillStyle = '#28101c';
+    C.beginPath(); C.moveTo(0, H);
+    for (let i = 0; i < mPts.length; i += 2)
+        C.lineTo(mPts[i] * W + px * 0.25, mPts[i+1] * H);
+    C.lineTo(W, H); C.closePath(); C.fill();
+
+    // Mid trees
+    paintTrees(W, H, px * 0.6, '#160a06', 0.56, 0.43, 13, 0.055, 0.18);
+
+    // Near trees
+    paintTrees(W, H, px * 0.88, '#0b0503', 0.76, 0.52, 9, 0.065, 0.22);
+
+    // Ground
+    const g = C.createLinearGradient(0, H * 0.78, 0, H);
+    g.addColorStop(0, '#090402'); g.addColorStop(1, '#040201');
+    C.fillStyle = g; C.fillRect(0, H * 0.78, W, H * 0.22);
+}
+
+function paintTrees(W, H, px, color, groundY, treeH, count, wFrac, spacingFrac) {
+    C.fillStyle = color;
+    const sp = W * spacingFrac;
+    const off = ((px % sp) + sp) % sp;
+    for (let i = -1; i <= count + 1; i++) {
+        const x  = i * (W / count) + off;
+        const th = H * treeH * (0.8 + Math.sin(i * 1.7) * 0.2);
+        const tw = W * wFrac  * (0.8 + Math.sin(i * 2.3) * 0.2);
+        const y  = H * groundY;
+        // Three overlapping triangle layers
+        for (let j = 0; j < 3; j++) {
+            const ly = y - th * j * 0.28;
+            const lw = tw * (1 - j * 0.18);
+            C.beginPath();
+            C.moveTo(x, ly - th * 0.48);
+            C.lineTo(x - lw / 2, ly);
+            C.lineTo(x + lw / 2, ly);
+            C.closePath(); C.fill();
+        }
+        C.fillRect(x - tw * 0.07, y - th * 0.15, tw * 0.14, th * 0.2);
+    }
+}
+
+// ── CITY ────────────────────────────────────────────────────────
+function drawCity(W, H, px) {
+    const sky = C.createLinearGradient(0, 0, 0, H * 0.72);
+    sky.addColorStop(0,   '#030310');
+    sky.addColorStop(0.5, '#08051a');
+    sky.addColorStop(1,   '#120828');
+    C.fillStyle = sky; C.fillRect(0, 0, W, H);
+
+    // Horizon glow
+    const hg = C.createLinearGradient(0, H * 0.52, 0, H * 0.78);
+    hg.addColorStop(0, 'rgba(0,0,0,0)');
+    hg.addColorStop(1, 'rgba(60,30,140,0.25)');
+    C.fillStyle = hg; C.fillRect(0, H * 0.52, W, H * 0.26);
+
+    paintBuildings(W, H, px * 0.35, '#09051a', 0.66, 0.14, 0.022, 22);
+    paintBuildings(W, H, px * 0.65, '#060310', 0.79, 0.24, 0.032, 15);
+    paintBuildings(W, H, px,        '#030208', 0.89, 0.36, 0.052, 10);
+
+    C.fillStyle = '#020107';
+    C.fillRect(0, H * 0.89, W, H * 0.11);
+
+    // Street reflection sheen
+    const sr = C.createLinearGradient(0, H * 0.89, 0, H);
+    sr.addColorStop(0, 'rgba(50,20,110,0.18)');
+    sr.addColorStop(1, 'rgba(0,0,0,0)');
+    C.fillStyle = sr; C.fillRect(0, H * 0.89, W, H * 0.11);
+}
+
+function paintBuildings(W, H, px, color, groundFrac, maxHFrac, wFrac, count) {
+    const sp  = W / count;
+    const off = ((px % sp) + sp) % sp;
+    for (let i = -1; i <= count + 1; i++) {
+        const x  = i * sp + off;
+        const bw = W * wFrac * (0.6 + Math.abs(Math.sin(i * 1.4)) * 0.8);
+        const bh = H * maxHFrac * (0.35 + Math.abs(Math.sin(i * 0.8 + 0.5)) * 0.65);
+        const y  = H * groundFrac;
+        C.fillStyle = color;
+        C.fillRect(x - bw / 2, y - bh, bw, bh);
+        // Windows
+        C.fillStyle = 'rgba(255,220,120,0.12)';
+        const rows = Math.floor(bh / 11), cols = Math.floor(bw / 7);
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (Math.sin(i * 4.1 + r * 1.3 + c * 0.9) > 0.25)
+                    C.fillRect(x - bw / 2 + c * 7 + 1.5, y - bh + r * 11 + 2, 3.5, 5);
+            }
+        }
+    }
+}
+
+// ── UNDERWATER ──────────────────────────────────────────────────
+function drawUnderwater(W, H, px) {
+    const water = C.createLinearGradient(0, 0, 0, H);
+    water.addColorStop(0,   '#001522');
+    water.addColorStop(0.4, '#002238');
+    water.addColorStop(1,   '#000d18');
+    C.fillStyle = water; C.fillRect(0, 0, W, H);
+
+    // Light rays
+    C.save(); C.globalAlpha = 0.035;
+    for (let i = 0; i < 7; i++) {
+        const rx = W * (0.08 + i * 0.14) + px * 0.15 + Math.sin(time * 0.008 + i) * 18;
+        C.fillStyle = 'rgba(80,190,255,1)';
+        C.beginPath();
+        C.moveTo(rx - 25, 0); C.lineTo(rx + 25, 0);
+        C.lineTo(rx + 90, H); C.lineTo(rx - 90, H);
+        C.closePath(); C.fill();
+    }
+    C.restore();
+
+    // Far rocks
+    const rPts = [0,.84, .12,.74, .28,.82, .44,.70, .60,.78, .76,.71, .90,.80, 1,.75];
+    C.fillStyle = '#000f18';
+    C.beginPath(); C.moveTo(0, H);
+    for (let i = 0; i < rPts.length; i += 2)
+        C.lineTo(rPts[i] * W + px * 0.28, rPts[i+1] * H);
+    C.lineTo(W, H); C.closePath(); C.fill();
+
+    // Seaweed
+    const swCount = 18;
+    const swSp    = W / swCount;
+    for (let i = 0; i < swCount + 2; i++) {
+        const x    = (i - 1) * swSp + (((px * 0.85) % swSp) + swSp) % swSp;
+        const h    = H * (0.09 + Math.abs(Math.sin(i * 2.3)) * 0.09);
+        const sway = Math.sin(time * 0.018 + i * 0.9) * 14;
+        C.strokeStyle = `rgba(0,${50 + Math.floor(Math.sin(i)*15)},${25 + Math.floor(Math.sin(i*1.7)*10)}, 0.9)`;
+        C.lineWidth   = 3 + Math.abs(Math.sin(i * 1.1)) * 2;
+        C.lineCap     = 'round';
+        C.beginPath();
+        C.moveTo(x, H * 0.9);
+        C.quadraticCurveTo(x + sway, H * 0.9 - h * 0.5, x + sway * 0.5, H * 0.9 - h);
+        C.stroke();
+    }
+
+    // Sandy floor
+    C.fillStyle = '#000d14';
+    C.fillRect(0, H * 0.9, W, H * 0.1);
+}
+
+// ================================================================
+// SILHOUETTE HELPERS
+// ================================================================
+
+// Filled trapezoid between two points with different widths + rounded caps
+function drawLimb(x1, y1, x2, y2, w1, w2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5) return;
+    const px = -dy / len, py = dx / len; // perpendicular unit
+    const hw1 = w1 / 2, hw2 = w2 / 2;
+
+    C.beginPath();
+    C.moveTo(x1 + px * hw1, y1 + py * hw1);
+    C.lineTo(x2 + px * hw2, y2 + py * hw2);
+    C.lineTo(x2 - px * hw2, y2 - py * hw2);
+    C.lineTo(x1 - px * hw1, y1 - py * hw1);
+    C.closePath();
+    C.fill();
+
+    // Rounded caps
+    C.beginPath(); C.arc(x1, y1, hw1, 0, Math.PI * 2); C.fill();
+    C.beginPath(); C.arc(x2, y2, hw2, 0, Math.PI * 2); C.fill();
+}
+
+// Bezier-curved torso with waist
+function drawTorso(ls, rs, lh, rh, sw) {
+    const waistY   = ls.y + (lh.y - ls.y) * 0.48;
+    const inset    = sw * 0.07;
+    const waistLX  = ls.x + (lh.x - ls.x) * 0.48 + inset;
+    const waistRX  = rs.x + (rh.x - rs.x) * 0.48 - inset;
+
+    C.beginPath();
+    C.moveTo(ls.x, ls.y);
+    C.bezierCurveTo(ls.x, waistY, waistLX, waistY, lh.x, lh.y);
+    C.lineTo(rh.x, rh.y);
+    C.bezierCurveTo(waistRX, waistY, rs.x, waistY, rs.x, rs.y);
+    C.closePath();
+    C.fill();
+}
+
+// Foot shape: ankle + toe landmark
+function drawFoot(ankle, toe, w) {
+    const dx = toe.x - ankle.x, dy = toe.y - ankle.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return;
+    const px = -dy / len, py = dx / len;
+    const hw = w * 0.55;
+
+    C.beginPath();
+    C.moveTo(ankle.x + px * hw, ankle.y + py * hw);
+    C.lineTo(toe.x  + px * hw * 0.6, toe.y  + py * hw * 0.6);
+    C.arc(toe.x, toe.y, hw * 0.6, Math.atan2(py, px) - Math.PI/2, Math.atan2(py, px) + Math.PI/2);
+    C.lineTo(ankle.x - px * hw, ankle.y - py * hw);
+    C.closePath();
+    C.fill();
+}
+
+// Full hand with real finger landmarks from Holistic
+function drawHand(handLm, sw) {
+    const W = canvas.width, H = canvas.height;
+    const pt = i => ({ x: (1 - handLm[i].x) * W, y: handLm[i].y * H });
+
+    const wrist = pt(0), midMcp = pt(9);
+    const size  = Math.max(Math.hypot(wrist.x - midMcp.x, wrist.y - midMcp.y), sw * 0.12);
+    const base  = size * 0.22;
+
+    // Palm fill: wrist + all MCP knuckles
+    C.beginPath();
+    C.moveTo(pt(0).x,  pt(0).y);
+    [1, 5, 9, 13, 17, 0].forEach(i => C.lineTo(pt(i).x, pt(i).y));
+    C.closePath(); C.fill();
+
+    // Each finger: thumb [1-4], index [5-8], middle [9-12], ring [13-16], pinky [17-20]
+    const chains = [
+        [0, 1, 2, 3, 4],
+        [0, 5, 6, 7, 8],
+        [0, 9, 10, 11, 12],
+        [0, 13, 14, 15, 16],
+        [0, 17, 18, 19, 20],
+    ];
+
+    chains.forEach((chain, fi) => {
+        const isThumb = fi === 0;
+        // Skip the wrist→MCP segment for non-thumb (covered by palm)
+        const start = isThumb ? 0 : 1;
+        for (let j = start; j < chain.length - 1; j++) {
+            const p1 = pt(chain[j]), p2 = pt(chain[j + 1]);
+            const t1 = j / (chain.length - 1);
+            const t2 = (j + 1) / (chain.length - 1);
+            const w1 = base * (isThumb ? (0.85 - t1 * 0.35) : (1.0 - t1 * 0.55));
+            const w2 = base * (isThumb ? (0.85 - t2 * 0.35) : (1.0 - t2 * 0.55));
+            drawLimb(p1.x, p1.y, p2.x, p2.y, Math.max(w1, 2), Math.max(w2, 1.5));
+        }
+    });
+}
+
+// ================================================================
+// SILHOUETTE
+// ================================================================
+function drawSilhouette(lm, lHand, rHand) {
+    const W = canvas.width, H = canvas.height;
+    const pt = i => ({ x: (1 - lm[i].x) * W, y: lm[i].y * H });
+
+    const ls = pt(11), rs = pt(12); // shoulders
+    const le = pt(13), re = pt(14); // elbows
+    const lw = pt(15), rw = pt(16); // wrists
+    const lh = pt(23), rh = pt(24); // hips
+    const lk = pt(25), rk = pt(26); // knees
+    const la = pt(27), ra = pt(28); // ankles
+    const lf = pt(31), rf = pt(32); // foot index
+    const lear = pt(7), rear = pt(8);
+    const nose = pt(0);
+
+    const sw = Math.max(Math.hypot(ls.x - rs.x, ls.y - rs.y), 40);
+    const headR = Math.max(Math.hypot(lear.x - rear.x, lear.y - rear.y) * 0.8, sw * 0.38);
+
+    const uaW  = sw * 0.21;   // upper arm
+    const faW  = sw * 0.17;   // forearm
+    const thW  = sw * 0.27;   // thigh
+    const caW  = sw * 0.20;   // calf
+    const nkW  = sw * 0.17;   // neck
+
+    C.save();
+    C.fillStyle = '#000';
+
+    // Draw order: legs → torso → arms → hands → neck → head
+
+    // Legs
+    drawLimb(lh.x, lh.y, lk.x, lk.y, thW,       thW * 0.88);
+    drawLimb(lk.x, lk.y, la.x, la.y, thW * 0.88, caW);
+    drawLimb(rh.x, rh.y, rk.x, rk.y, thW,       thW * 0.88);
+    drawLimb(rk.x, rk.y, ra.x, ra.y, thW * 0.88, caW);
+    drawFoot(la, lf, caW);
+    drawFoot(ra, rf, caW);
+
+    // Torso
+    drawTorso(ls, rs, lh, rh, sw);
+
+    // Arms
+    drawLimb(ls.x, ls.y, le.x, le.y, uaW,       uaW * 0.9);
+    drawLimb(le.x, le.y, lw.x, lw.y, uaW * 0.9, faW);
+    drawLimb(rs.x, rs.y, re.x, re.y, uaW,       uaW * 0.9);
+    drawLimb(re.x, re.y, rw.x, rw.y, uaW * 0.9, faW);
+
+    // Hands — real fingers if available, blob fallback
+    if (lHand) drawHand(lHand, sw);
+    else { C.beginPath(); C.arc(lw.x, lw.y, faW * 0.9, 0, Math.PI * 2); C.fill(); }
+
+    if (rHand) drawHand(rHand, sw);
+    else { C.beginPath(); C.arc(rw.x, rw.y, faW * 0.9, 0, Math.PI * 2); C.fill(); }
+
+    // Neck
+    const neckBase = { x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2 };
+    drawLimb(neckBase.x, neckBase.y, nose.x, nose.y - headR * 0.3, nkW * 1.1, nkW);
+
+    // Head (slightly oval)
+    C.beginPath();
+    C.ellipse(nose.x, nose.y - headR * 0.18, headR * 0.82, headR, 0, 0, Math.PI * 2);
+    C.fill();
+
+    C.restore();
+}
+
+// ================================================================
+// THEATER FRAME
+// ================================================================
+function drawFrame() {
+    const W = canvas.width, H = canvas.height;
+    const bx = Math.round(W * 0.055);
+    const by = Math.round(H * 0.055);
+
+    C.fillStyle = '#000';
+
+    // Sides
+    C.fillRect(0, 0, bx, H);
+    C.fillRect(W - bx, 0, bx, H);
+    // Top
+    C.fillRect(0, 0, W, by);
+    // Bottom strip
+    C.fillRect(0, H - by * 0.55, W, by * 0.55);
+
+    // Soft inner vignette
+    const vig = C.createRadialGradient(W/2, H/2, H * 0.28, W/2, H/2, H * 0.75);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,0,0.45)');
+    C.fillStyle = vig; C.fillRect(0, 0, W, H);
+}
+
+// ================================================================
+// RENDER LOOP
+// ================================================================
+function render() {
+    requestAnimationFrame(render);
+    time++;
+
+    drawBackground();
+    tickParticles();
+    drawParticles();
+
+    const lm = smooth(rawLandmarks);
+    smoothedLH = smoothArr(rawLeftHand,  smoothedLH);
+    smoothedRH = smoothArr(rawRightHand, smoothedRH);
+    const noBody = document.getElementById('no-body');
+
+    if (lm) {
+        drawSilhouette(lm, smoothedLH, smoothedRH);
+        noBody.style.display = 'none';
+    } else {
+        noBody.style.display = 'block';
+    }
+
+    drawFrame();
+}
+
+// ================================================================
+// INIT
+// ================================================================
+async function init() {
+    document.getElementById('start-overlay').style.display = 'none';
+    spawnParticles();
+
+    const holistic = new Holistic({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}`
+    });
+
+    holistic.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    holistic.onResults(results => {
+        rawLandmarks = results.poseLandmarks  || null;
+        rawLeftHand  = results.leftHandLandmarks  || null;
+        rawRightHand = results.rightHandLandmarks || null;
+    });
+
+    const cam = new Camera(video, {
+        onFrame: async () => { await holistic.send({ image: video }); },
+        width: 640,
+        height: 480
+    });
+
+    await cam.start();
+    render();
+}
+</script>
+
+</body>
+</html>
